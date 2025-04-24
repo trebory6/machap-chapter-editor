@@ -2,15 +2,28 @@ import subprocess
 from datetime import timedelta
 
 
-def detect_black_frames(video_path):
+def detect_black_frames(
+    video_path,
+    min_black_seconds=0.4,
+    ratio_black_pixels=0.98,
+    black_pixel_threshold=0.08,
+    window_list=None
+):
+    vf_filter = (
+        f"blackdetect=d={min_black_seconds}:pic_th={ratio_black_pixels}:pix_th={black_pixel_threshold}"
+    )
+
     cmd = [
         "ffmpeg", "-hide_banner", "-i", video_path,
-        "-vf", "blackdetect=d=0.5:pic_th=0.98",
+        "-vf", vf_filter,
         "-an", "-f", "null", "-"
     ]
 
     process = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
     black_events = []
+
+    print("🔎 FFmpeg stderr output:")
+    print(process.stderr)
 
     for line in process.stderr.splitlines():
         if "black_start" in line:
@@ -25,8 +38,14 @@ def detect_black_frames(video_path):
                         continue
             black_events.append(event)
 
-    return black_events
+    # If window_list is defined, filter results
+    if window_list:
+        black_events = [
+            e for e in black_events
+            if any(start <= e["black_start"] <= end for start, end in window_list)
+        ]
 
+    return black_events
 
 def format_timestamp(seconds):
     """Convert float seconds to HH:MM:SS.mmm format."""

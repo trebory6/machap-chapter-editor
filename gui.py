@@ -1,6 +1,8 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QMessageBox
 )
+from queue_manager import QueueManager
+
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtCore import QUrl
@@ -15,6 +17,11 @@ from PySide6.QtWidgets import QFrame
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidget, QListWidgetItem
 from PySide6.QtCore import QObject, QEvent
+
+from scan_settings import ScanSettingsDialog
+
+from detector import detect_black_frames
+# from scan_settings import parse_time_range_list
 
 class ChapterListWidget(QListWidget):
     def __init__(self, parent=None):
@@ -62,7 +69,15 @@ class KeyPressFilter(QObject):
 class ChapterEditor(QWidget):
     def __init__(self):
         super().__init__()
+        self.scan_settings = {
+            "min_black_seconds": 0.4,
+            "ratio_black_pixels": 0.98,
+            "black_pixel_threshold": 0.08,
+            "window_list": "",
+        }
+
         self.setWindowTitle("MaChap Chapter Editor")
+        self.queue_window = None
 
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -79,6 +94,8 @@ class ChapterEditor(QWidget):
 
         self.current_time_label = QLabel("00:00:00.000")
         self.total_time_label = QLabel("00:00:00.000")
+
+
 
         self.current_time_label.setFixedHeight(20)
         self.total_time_label.setFixedHeight(20)
@@ -97,11 +114,18 @@ class ChapterEditor(QWidget):
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
 
+        # Queue Window
+        self.queue_button = QPushButton("Open Queue Manager")
+        self.queue_button.clicked.connect(self.open_queue_manager)
+
         left_layout.addWidget(self.video_widget)
+
         left_layout.addWidget(self.timeline)
 
         self.load_button = QPushButton("Load Video")
         self.detect_button = QPushButton("Detect Black Frames")
+        self.settings_button = QPushButton("Scan Settings")
+        self.settings_button.clicked.connect(self.open_scan_settings)
         left_layout.addSpacing(5)
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
@@ -148,7 +172,16 @@ class ChapterEditor(QWidget):
         left_layout.addLayout(nav_row)
         left_layout.addLayout(self.time_bar)
         left_layout.addWidget(self.load_button)
-        left_layout.addWidget(self.detect_button)
+
+        self.queue_button = QPushButton("Open Queue Manager")
+        self.queue_button.clicked.connect(self.open_queue_manager)
+        left_layout.addWidget(self.queue_button)
+
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(self.detect_button)
+        scan_row.addWidget(self.settings_button)
+        left_layout.addLayout(scan_row)
+
         left_layout.addWidget(self.add_chapter_button)
         left_layout.addWidget(self.remove_chapter_button)
         left_layout.addWidget(self.export_chapters_button)
@@ -179,31 +212,35 @@ class ChapterEditor(QWidget):
 
     def detect_chapters(self):
         if not self.video_path:
-            QMessageBox.warning(self, "No video", "Please load a video first.")
             return
 
-        black_frames = detect_black_frames(self.video_path)
+        print("🕵️ Detecting black frames for:", self.video_path)
 
-        self.detected_chapters = [bf["black_start"] for bf in black_frames]
+        # Get settings
+        settings = self.scan_settings
+        window_list = parse_time_range_list(settings.get("window_list", ""))
 
-        if black_frames:
-            summary = "\n".join(
-                f"Start: {format_timestamp(bf['black_start'])}, Duration: {format_timestamp(bf['black_duration'])}"
-                for bf in black_frames
-            )
+        # Scan
+        black_frames = detect_black_frames(
+            self.video_path,
+            min_black_seconds=settings["min_black_seconds"],
+            ratio_black_pixels=settings["ratio_black_pixels"],
+            black_pixel_threshold=settings["black_pixel_threshold"],
+            window_list=window_list
+        )
 
-            duration_ms = self.media_player.duration()
-            duration_sec = self.video_duration
+        self.detected_chapters = [
+            round(f["black_start"] + (f["black_duration"] / 2), 3)
+            for f in black_frames
+        ]
+        self.timeline.set_chapters(self.detected_chapters + self.manual_chapters, self.video_duration)
+        self.update_chapter_list()
 
-            self.timeline.set_chapters(
-                chapter_times=self.detected_chapters,
-                video_duration=duration_sec
-            )
-            self.update_chapter_list()
-        else:
-            summary = "No black frames detected."
-
-        self.result_label.setText(summary)
+        summary = "\n".join(
+            f"Start: {format_timestamp(bf['black_start'])}, Duration: {format_timestamp(bf['black_duration'])}"
+            for bf in black_frames
+        )
+        # self.results_label.setText(summary)
 
     def seek_to_time(self, seconds):
         self.media_player.setPosition(int(seconds * 1000))
@@ -384,4 +421,41 @@ class ChapterEditor(QWidget):
 
     def step_backward(self):
         self.media_player.setPosition(self.media_player.position() - 1000 // 24)
+
+    def open_queue_manager(self):
+        print("Queue Manager button clicked") #debug
+        self.queue_window = QueueManager(self)
+        self.queue_window.show()
+
+    def open_scan_settings(self):
+        dialog = ScanSettingsDialog(self, getattr(self, 'scan_settings', None))
+        dialog.settingsApplied.connect(self.update_scan_settings)
+        if dialog.exec():
+            self.scan_settings = dialog.get_settings()
+
+    def update_scan_settings(self, new_settings):
+        self.scan_settings = new_settings
+        print("🔧 Updated scan settings:", self.scan_settings)
+
+def parse_time_range_list(time_string):
+    def hms_to_seconds(t):
+        parts = t.strip().split(":")
+        if len(parts) != 3:
+            raise ValueError(f"Invalid time format: '{t}'")
+        hours, minutes, seconds = map(int, parts)
+        return hours * 3600 + minutes * 60 + seconds
+
+    ranges = []
+    for pair in time_string.split(","):
+        if "-" not in pair:
+            continue
+        start_str, end_str = pair.split("-")
+        try:
+            start = hms_to_seconds(start_str)
+            end = hms_to_seconds(end_str)
+            if start < end:
+                ranges.append((start, end))
+        except Exception as e:
+            print(f"⚠️ Failed to parse time range '{pair}': {e}")
+    return ranges
 
