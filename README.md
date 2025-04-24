@@ -28,6 +28,7 @@ This is a learning project, and I'm still figuring things out as I go. The code 
 4. Use the chapter list on the right to jump to chapters. Press `Delete` or click **Remove Chapter** to remove unwanted chapters.
 5. Navigate frames using the arrow keys or frame buttons.
 6. Add chapters manually by clicking **Add Chapter Here** or pressing the `A` key.
+7. (WIP) Click **Export File** or **Add to Export Queue** to prepare a file for output with chapters.
 
 ### Batch Import and Scan:
 
