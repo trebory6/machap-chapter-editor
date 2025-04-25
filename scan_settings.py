@@ -1,12 +1,12 @@
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
-    QTextEdit, QPushButton, QHBoxLayout, QWidget
+    QTextEdit, QPushButton, QHBoxLayout, QWidget, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 
 
 class ScanSettingsDialog(QDialog):
-    settingsApplied = Signal(dict)  # 🔔 Signal to notify parent of changes
+    settingsApplied = Signal(dict)
 
     def __init__(self, parent=None, initial_settings=None):
         super().__init__(parent)
@@ -18,6 +18,7 @@ class ScanSettingsDialog(QDialog):
             "ratio_black_pixels": 0.98,
             "black_pixel_threshold": 0.1,
             "window_list": "",
+            "export_format": "mp4"
         }
 
         layout = QFormLayout()
@@ -45,6 +46,13 @@ class ScanSettingsDialog(QDialog):
         self.window_list.setFixedHeight(60)
         layout.addRow("Scan Time Windows:", self.window_list)
 
+        self.export_format = QComboBox()
+        self.export_format.addItems([".mp4", ".mkv", ".txt(MKVMerge)"])
+        current_format = self.settings.get("export_format", "mp4")
+        index = self.export_format.findText(current_format)
+        self.export_format.setCurrentIndex(index if index != -1 else 0)
+        layout.addRow("Export Format:", self.export_format)
+
         # Buttons: OK, Cancel, Apply
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
@@ -68,9 +76,10 @@ class ScanSettingsDialog(QDialog):
             "min_black_seconds": self.min_black.value(),
             "ratio_black_pixels": self.ratio_black.value(),
             "black_pixel_threshold": self.threshold_black.value(),
-            "window_list": self.window_list.toPlainText().strip()
+            "window_list": self.window_list.toPlainText().strip(),
+            "export_format": self.export_format.currentText()
         }
 
     def apply_settings(self):
         new_settings = self.get_settings()
-        self.settingsApplied.emit(new_settings)  # 🔔 Tell parent new settings were saved
+        self.settingsApplied.emit(new_settings)

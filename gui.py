@@ -26,10 +26,10 @@ from detector import detect_black_frames
 class ChapterListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.editor = parent  # Reference to ChapterEditor instance
+        self.editor = parent
 
     def keyPressEvent(self, event):
-        print("Key pressed:", event.key())  # Debug print
+        print("Key pressed:", event.key())
         if event.key() == Qt.Key_Delete:
             selected = self.currentItem()
             if selected:
@@ -84,7 +84,7 @@ class ChapterEditor(QWidget):
         self.media_player.setAudioOutput(self.audio_output)
         self.video_widget = QVideoWidget()
         self.video_widget.setFixedWidth(800)
-        self.video_widget.setFixedHeight(450)  # or 480, 360, etc.
+        self.video_widget.setFixedHeight(450)
         size_policy = QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         size_policy.setHeightForWidth(True)
         self.video_widget.setSizePolicy(size_policy)
@@ -117,6 +117,7 @@ class ChapterEditor(QWidget):
         # Queue Window
         self.queue_button = QPushButton("Open Queue Manager")
         self.queue_button.clicked.connect(self.open_queue_manager)
+        self.queue_window = None
 
         left_layout.addWidget(self.video_widget)
 
@@ -132,7 +133,7 @@ class ChapterEditor(QWidget):
         divider.setFrameShadow(QFrame.Sunken)
         divider.setLineWidth(1)
         divider.setMidLineWidth(1)
-        divider.setFixedHeight(10)  # ✅ Ensure it's tall enough to be seen
+        divider.setFixedHeight(10)
         left_layout.addWidget(divider)
 
         self.play_pause_button = QPushButton("▶ Play")
@@ -168,7 +169,7 @@ class ChapterEditor(QWidget):
         nav_row.addWidget(self.prev_frame_button)
         nav_row.addWidget(self.next_frame_button)
 
-        # Add all widgets to left side layout
+        # All widgets to left side layout
         left_layout.addLayout(nav_row)
         left_layout.addLayout(self.time_bar)
         left_layout.addWidget(self.load_button)
@@ -186,11 +187,9 @@ class ChapterEditor(QWidget):
         left_layout.addWidget(self.remove_chapter_button)
         left_layout.addWidget(self.export_chapters_button)
 
-        # Combine left + right side into main layout
         main_layout.addLayout(left_layout)
         main_layout.addWidget(self.chapter_list)
 
-        # Install global key event filter
         self.key_filter = KeyPressFilter(self)
         self.installEventFilter(self.key_filter)
 
@@ -216,11 +215,9 @@ class ChapterEditor(QWidget):
 
         print("🕵️ Detecting black frames for:", self.video_path)
 
-        # Get settings
         settings = self.scan_settings
         window_list = parse_time_range_list(settings.get("window_list", ""))
 
-        # Scan
         black_frames = detect_black_frames(
             self.video_path,
             min_black_seconds=settings["min_black_seconds"],
@@ -356,7 +353,7 @@ class ChapterEditor(QWidget):
 
     def store_video_duration(self, duration_ms):
         self.video_duration = duration_ms / 1000.0 if duration_ms else 1
-        self.timeline.video_duration = self.video_duration  # ✅ pass it to the timeline
+        self.timeline.video_duration = self.video_duration
         print(f"[DEBUG] Stored duration: {self.video_duration:.3f}s")
         h = int(self.video_duration // 3600)
         m = int((self.video_duration % 3600) // 60)
@@ -366,7 +363,7 @@ class ChapterEditor(QWidget):
 
     def jump_to_chapter_from_list(self, item):
         try:
-            timestamp = float(item.data(1000))  # stored seconds
+            timestamp = float(item.data(1000))
             self.media_player.setPosition(int(timestamp * 1000))
         except Exception as e:
             print(f"Error seeking to chapter: {e}")
@@ -383,7 +380,7 @@ class ChapterEditor(QWidget):
 
             label = f"{h:02}:{m:02}:{s:02}.{ms:03}"
             item = QListWidgetItem(f"Chapter {i}: {label}")
-            item.setData(1000, ts)  # store timestamp in seconds
+            item.setData(1000, ts)
             self.chapter_list.addItem(item)
 
     def delete_chapter_by_timestamp(self, ts):
@@ -417,25 +414,47 @@ class ChapterEditor(QWidget):
             super().keyPressEvent(event)
 
     def step_forward(self):
-        self.media_player.setPosition(self.media_player.position() + 1000 // 24)  # ~1 frame step
+        self.media_player.setPosition(self.media_player.position() + 1000 // 24)
 
     def step_backward(self):
         self.media_player.setPosition(self.media_player.position() - 1000 // 24)
 
     def open_queue_manager(self):
-        print("Queue Manager button clicked") #debug
-        self.queue_window = QueueManager(self)
-        self.queue_window.show()
+        if self.queue_window is None or not self.queue_window.isVisible():
+            from queue_manager import QueueManager
+            self.queue_window = QueueManager()
+            self.queue_window.show()
+        else:
+            self.queue_window.raise_()
+            self.queue_window.activateWindow()
 
     def open_scan_settings(self):
-        dialog = ScanSettingsDialog(self, getattr(self, 'scan_settings', None))
-        dialog.settingsApplied.connect(self.update_scan_settings)
-        if dialog.exec():
-            self.scan_settings = dialog.get_settings()
+        if not hasattr(self, "_scan_settings_dialog") or self._scan_settings_dialog is None:
+            self._scan_settings_dialog = ScanSettingsDialog(self, getattr(self, 'scan_settings', None))
+            self._scan_settings_dialog.settingsApplied.connect(self.update_scan_settings)
+        self._scan_settings_dialog.show()
+        self._scan_settings_dialog.raise_()
+        self._scan_settings_dialog.activateWindow()
 
     def update_scan_settings(self, new_settings):
         self.scan_settings = new_settings
         print("🔧 Updated scan settings:", self.scan_settings)
+
+    def load_from_queue(self, path, chapters):
+        self.load_video(path_override=path)
+        self.detected_chapters = chapters
+        self.manual_chapters = []
+        self.timeline.set_chapters(chapters, self.video_duration)
+        self.update_chapter_list()
+
+    def load_video(self, path_override=None):
+        file_path = path_override or QFileDialog.getOpenFileName(self, "Select Video")[0]
+        if not file_path:
+            return
+
+        self.video_path = file_path
+        self.media_player.setSource(QUrl.fromLocalFile(file_path))
+        self.media_player.pause()
 
 def parse_time_range_list(time_string):
     def hms_to_seconds(t):

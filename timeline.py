@@ -3,7 +3,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtCore import Qt, Signal
 
 class ChapterTimeline(QWidget):
-    seekRequested = Signal(float)  # 🔔 Signal to request a seek (in seconds)
+    seekRequested = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)

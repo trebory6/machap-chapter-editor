@@ -38,7 +38,6 @@ def detect_black_frames(
                         continue
             black_events.append(event)
 
-    # If window_list is defined, filter results
     if window_list:
         black_events = [
             e for e in black_events
