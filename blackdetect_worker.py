@@ -8,7 +8,7 @@ from PySide6.QtCore import QThread, Signal
 
 from detector import BlackdetectCancelled, BlackdetectError, detect_black_frames
 from export_utils import get_media_duration_seconds
-from time_windows import parse_time_range_list
+from time_windows import expand_scan_time_windows
 
 
 def _max_analysis_width_from_settings(settings: dict[str, Any]) -> int | None:
@@ -24,7 +24,7 @@ def _use_hwaccel_from_settings(settings: dict[str, Any]) -> bool:
 
 
 def _parallel_scan_jobs_from_settings(settings: dict[str, Any]) -> int:
-    return max(1, int(settings.get("parallel_scan_jobs", 1)))
+    return max(1, int(settings.get("parallel_scan_jobs", 4)))
 
 
 def format_eta(seconds: float | None) -> str:
@@ -57,8 +57,11 @@ class EditorBlackdetectWorker(QThread):
 
     def run(self) -> None:
         try:
-            window_list = parse_time_range_list(self.settings.get("window_list", ""))
             duration = get_media_duration_seconds(self.video_path) or 0.0
+            window_list = expand_scan_time_windows(
+                str(self.settings.get("window_list", "") or ""),
+                duration,
+            )
 
             def on_ratio(r: float) -> None:
                 self.progress_ratio.emit(r)
@@ -113,8 +116,11 @@ class BatchBlackdetectWorker(QThread):
 
             self.file_progress.emit(i, n, path, 0.0)
 
-            window_list = parse_time_range_list(self.settings.get("window_list", ""))
             duration = get_media_duration_seconds(path) or 0.0
+            window_list = expand_scan_time_windows(
+                str(self.settings.get("window_list", "") or ""),
+                duration,
+            )
 
             try:
 

@@ -46,3 +46,15 @@ def test_write_mkvmerge_simple_chapters() -> None:
         assert "CHAPTER01NAME=Chapter 1" in text
     finally:
         os.unlink(path)
+
+
+def test_build_remux_command_copy_for_mp4() -> None:
+    from export_utils import build_remux_with_metadata_command
+
+    cmd = build_remux_with_metadata_command(
+        r"C:\videos\clip.mp4",
+        r"C:\meta\ch.txt",
+        r"C:\out\out.mp4",
+    )
+    assert "-c" in cmd and "copy" in cmd
+    assert "libx264" not in cmd

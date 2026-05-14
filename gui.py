@@ -21,12 +21,15 @@ from PySide6.QtWidgets import (
 from blackdetect_worker import EditorBlackdetectWorker, format_eta
 from detector import BlackdetectError
 from export_utils import (
+    RemuxError,
     get_media_duration_seconds,
     normalize_export_format,
+    remux_video_with_chapters,
     write_ffmpeg_chapter_file,
     write_mkvmerge_simple_chapters,
 )
 from scan_settings import ScanSettingsDialog
+from time_windows import DEFAULT_SCAN_WINDOW_LIST_TEXT
 from timeline import ChapterTimeline
 
 
@@ -93,12 +96,13 @@ class ChapterEditor(QWidget):
             "min_black_seconds": 0.4,
             "ratio_black_pixels": 0.98,
             "black_pixel_threshold": 0.08,
-            "window_list": "",
+            "window_list": DEFAULT_SCAN_WINDOW_LIST_TEXT,
             "export_format": "mp4",
             "max_analysis_width": 854,
             "use_hwaccel": False,
-            "parallel_scan_jobs": 1,
+            "parallel_scan_jobs": 4,
         }
+        self._was_playing_before_scrub = False
 
         self.setWindowTitle("MaChap Chapter Editor")
         self.queue_window = None
@@ -132,6 +136,7 @@ class ChapterEditor(QWidget):
         self.timeline = ChapterTimeline()
         self.timeline.setFixedHeight(20)
         self.timeline.seekRequested.connect(self.seek_to_time)
+        self.timeline.scrubbingChanged.connect(self._on_timeline_scrubbing)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -172,6 +177,9 @@ class ChapterEditor(QWidget):
         self.add_chapter_button = QPushButton("➕ Add Chapter Here")
         self.add_chapter_button.clicked.connect(self.add_chapter_at_current_time)
 
+        self.export_file_button = QPushButton("📤 Export File")
+        self.export_file_button.clicked.connect(self.export_loaded_media_with_chapters)
+
         self.export_chapters_button = QPushButton("💾 Export Chapters")
         self.export_chapters_button.clicked.connect(self.export_chapters_to_file)
 
@@ -199,6 +207,7 @@ class ChapterEditor(QWidget):
 
         left_layout.addWidget(self.add_chapter_button)
         left_layout.addWidget(self.remove_chapter_button)
+        left_layout.addWidget(self.export_file_button)
         left_layout.addWidget(self.export_chapters_button)
 
         main_layout.addLayout(left_layout)
@@ -300,7 +309,11 @@ class ChapterEditor(QWidget):
         elapsed = self._scan_elapsed.elapsed() / 1000.0
         if self._scan_dialog.maximum() > 0:
             self._scan_dialog.setValue(int(min(1.0, ratio) * 1000))
-            eta = elapsed * (1.0 / max(ratio, 0.02) - 1.0) if ratio > 0.02 else None
+            eta: float | None
+            if ratio >= 0.12:
+                eta = elapsed * (1.0 / max(ratio, 0.02) - 1.0)
+            else:
+                eta = None
             self._scan_dialog.setLabelText(
                 "Scanning for black frames…\n"
                 f"About {min(100.0, ratio * 100):.0f}% of runtime — ETA ~ {format_eta(eta)}\n"
@@ -348,6 +361,17 @@ class ChapterEditor(QWidget):
         self._scan_elapsed = None
         self._scan_worker = None
 
+    def _on_timeline_scrubbing(self, active: bool) -> None:
+        if active:
+            self._was_playing_before_scrub = (
+                self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            )
+            self.media_player.pause()
+            self.play_pause_button.setText("▶ Play")
+        elif self._was_playing_before_scrub:
+            self.media_player.play()
+            self.play_pause_button.setText("⏸ Pause")
+
     def seek_to_time(self, seconds: float) -> None:
         self.media_player.setPosition(int(seconds * 1000))
 
@@ -383,6 +407,72 @@ class ChapterEditor(QWidget):
             video_duration=duration_sec,
         )
         self.update_chapter_list()
+
+    def export_loaded_media_with_chapters(self) -> None:
+        import os
+
+        if not self.video_path:
+            QMessageBox.information(self, "No video", "Load a video file first.")
+            return
+
+        all_chapters = sorted(set(self.manual_chapters + self.detected_chapters))
+        if not all_chapters:
+            QMessageBox.information(
+                self,
+                "No Chapters",
+                "Add or detect at least one chapter before exporting the file.",
+            )
+            return
+
+        fmt = normalize_export_format(self.scan_settings.get("export_format", "mp4"))
+        if fmt in ("txt", "mkvmerge_txt"):
+            QMessageBox.information(
+                self,
+                "Video export",
+                "Scan Settings export format is set to a chapter sidecar only. "
+                "Choose MP4 or MKV under Export format to remux a video with embedded chapters, "
+                "or use Export Chapters to save a metadata text file.",
+            )
+            return
+
+        ext = ".mp4" if fmt == "mp4" else ".mkv"
+        base = os.path.splitext(os.path.basename(self.video_path))[0]
+        default_name = f"{base}_chaptered{ext}"
+        filter_str = (
+            "MP4 video (*.mp4);;All files (*)"
+            if fmt == "mp4"
+            else "Matroska video (*.mkv);;All files (*)"
+        )
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export video with chapters",
+            default_name,
+            filter_str,
+        )
+        if not path:
+            return
+
+        if not os.path.splitext(path)[1]:
+            path = path + ext
+
+        self.setEnabled(False)
+        try:
+            remux_video_with_chapters(self.video_path, all_chapters, path)
+        except RemuxError as e:
+            QMessageBox.critical(
+                self,
+                "FFmpeg failed",
+                (e.stderr or str(e))[-3000:],
+            )
+            return
+        except OSError as e:
+            QMessageBox.critical(self, "Export failed", str(e))
+            return
+        finally:
+            self.setEnabled(True)
+
+        QMessageBox.information(self, "Export complete", f"Video saved to:\n{path}")
 
     def export_chapters_to_file(self) -> None:
         all_chapters = sorted(set(self.manual_chapters + self.detected_chapters))

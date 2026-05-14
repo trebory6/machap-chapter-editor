@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from export_utils import normalize_export_format
+from time_windows import DEFAULT_SCAN_WINDOW_LIST_TEXT
 
 
 class ScanSettingsDialog(QDialog):
@@ -28,11 +29,11 @@ class ScanSettingsDialog(QDialog):
             "min_black_seconds": 2.0,
             "ratio_black_pixels": 0.98,
             "black_pixel_threshold": 0.1,
-            "window_list": "",
+            "window_list": DEFAULT_SCAN_WINDOW_LIST_TEXT,
             "export_format": "mp4",
             "max_analysis_width": 854,
             "use_hwaccel": False,
-            "parallel_scan_jobs": 1,
+            "parallel_scan_jobs": 4,
         }
 
         layout = QFormLayout()
@@ -55,7 +56,11 @@ class ScanSettingsDialog(QDialog):
         layout.addRow("Black Pixel Threshold (0–1):", self.threshold_black)
 
         self.window_list = QTextEdit()
-        self.window_list.setPlaceholderText("00:02:00-00:03:00, 00:08:30-00:10:00")
+        self.window_list.setPlaceholderText(
+            "HH:MM:SS-HH:MM:SS per range, comma-separated. "
+            "Use HH:MM:SS-$END-HH:MM:SS so the part after $END is the margin before "
+            "file end (default 00:00:05-$END-00:00:30)."
+        )
         self.window_list.setPlainText(self.settings.get("window_list", ""))
         self.window_list.setFixedHeight(60)
         layout.addRow("Scan Time Windows:", self.window_list)
@@ -83,11 +88,13 @@ class ScanSettingsDialog(QDialog):
 
         self.parallel_scan_jobs = QSpinBox()
         self.parallel_scan_jobs.setRange(1, 12)
-        self.parallel_scan_jobs.setValue(int(self.settings.get("parallel_scan_jobs", 1)))
+        self.parallel_scan_jobs.setValue(int(self.settings.get("parallel_scan_jobs", 4)))
         self.parallel_scan_jobs.setToolTip(
             "Number of parallel FFmpeg processes on different time ranges (1 = one "
             "slow pass, most accurate). Values >1 use fast input seek and can approach "
-            "4× speed on a quad-core CPU; not used when scan time windows are set."
+            "several× speed on a multi-core CPU. With a single scan time window (including "
+            "the default trim), parallel slices apply inside that window only. "
+            "Not used when multiple disjoint scan windows are set."
         )
         layout.addRow("Parallel scan jobs:", self.parallel_scan_jobs)
 
@@ -129,7 +136,7 @@ class ScanSettingsDialog(QDialog):
         mw = settings.get("max_analysis_width", 854)
         self.max_analysis_width.setValue(854 if mw is None else int(mw))
         self.use_hwaccel.setChecked(bool(settings.get("use_hwaccel", False)))
-        self.parallel_scan_jobs.setValue(int(settings.get("parallel_scan_jobs", 1)))
+        self.parallel_scan_jobs.setValue(int(settings.get("parallel_scan_jobs", 4)))
         current_fmt = normalize_export_format(settings.get("export_format", "mp4"))
         idx = self.export_format.findData(current_fmt)
         self.export_format.setCurrentIndex(0 if idx < 0 else idx)

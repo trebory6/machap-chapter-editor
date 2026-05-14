@@ -8,7 +8,9 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta
 
-_FFMPEG_STATUS_TIME = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FFMPEG_STATUS_TIME = re.compile(r"time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_OUT_TIME_US = re.compile(r"out_time_us=(\d+)")
+_OUT_TIME_MS = re.compile(r"out_time_ms=(\d+)")
 
 
 class BlackdetectError(Exception):
@@ -25,13 +27,24 @@ class BlackdetectCancelled(Exception):
 
 
 def ffmpeg_status_time_seconds(line: str) -> float | None:
-    """Parse ``time=HH:MM:SS.xx`` from an FFmpeg status line, or return None."""
+    """
+    Best-effort decode timestamp from an FFmpeg progress line (stderr).
+
+    Tries ``time=``, then ``out_time_us=`` / ``out_time_ms=`` (common when ``time=``
+    is missing or ``N/A`` on some builds or filtergraphs).
+    """
     m = _FFMPEG_STATUS_TIME.search(line)
-    if not m:
-        return None
-    hours, minutes = int(m.group(1)), int(m.group(2))
-    sec = float(m.group(3))
-    return float(hours * 3600 + minutes * 60 + sec)
+    if m:
+        hours, minutes = int(m.group(1)), int(m.group(2))
+        sec = float(m.group(3))
+        return float(hours * 3600 + minutes * 60 + sec)
+    m = _OUT_TIME_US.search(line)
+    if m:
+        return int(m.group(1)) / 1_000_000.0
+    m = _OUT_TIME_MS.search(line)
+    if m:
+        return int(m.group(1)) / 1000.0
+    return None
 
 
 def build_blackdetect_filter(
@@ -170,8 +183,8 @@ def _run_blackdetect_stream(
     stderr_parts: list[str] = []
 
     if on_time_ratio:
-        on_time_ratio(0.05)
-        last_ratio[0] = 0.05
+        on_time_ratio(0.0)
+        last_ratio[0] = 0.0
 
     try:
         while True:
@@ -198,12 +211,13 @@ def _run_blackdetect_stream(
                     on_time_ratio
                     and duration_for_ratio
                     and duration_for_ratio > 0
-                    and idle % 75 == 0
+                    and idle % 40 == 0
                 ):
-                    guess = min(
-                        0.88,
-                        (time.monotonic() - t0) / max(duration_for_ratio, 1.0) * 0.45,
-                    )
+                    # Wall-clock hint when FFmpeg emits few/no parseable progress lines
+                    # (some Blu-ray / VC-1 / odd containers). Assume decode often runs well
+                    # below realtime; keep this conservative so the bar does not race to 100%.
+                    wall = time.monotonic() - t0
+                    guess = min(0.92, wall / max(duration_for_ratio * 8.0, 30.0))
                     last_ratio[0] = max(last_ratio[0], guess)
                     on_time_ratio(last_ratio[0])
     except BlackdetectCancelled:
@@ -271,8 +285,12 @@ def detect_black_frames(
     ``parallel_jobs`` > 1: run multiple FFmpeg processes on time slices using ``-ss``
     before ``-i`` (much faster on multi-core). Timestamps are shifted back to file
     time; seek is keyframe-aligned so positions can be off by up to ~1–2 GOPs near
-    slice edges—disabled when ``window_list`` is set. ``parallel_jobs`` 1 uses a
-    single process (most accurate).
+    slice edges. Used for a **full-file** scan (no windows) or a **single**
+    contiguous window (for example the default trim span). Multiple disjoint windows
+    fall back to one sequential decode of the whole file. ``parallel_jobs`` 1 uses
+    a single process; with exactly one window it still skips decode outside that span
+    via ``-ss`` / ``-t`` when possible. While parallel workers run, overall progress
+    is the mean of per-segment decode ratios (polled from the coordinator thread).
     """
     cancel = is_cancelled or (lambda: False)
     vf_filter = build_blackdetect_filter(
@@ -282,75 +300,126 @@ def detect_black_frames(
         max_analysis_width,
     )
 
-    parallel_ok = (
+    windows: list[tuple[float, float]] = list(window_list) if window_list else []
+    single_span: tuple[float, float] | None = None
+    if len(windows) == 1:
+        w_lo, w_hi = windows[0]
+        if w_hi > w_lo:
+            single_span = (w_lo, w_hi)
+
+    duration_sec = float(duration_hint_sec) if duration_hint_sec is not None else 0.0
+
+    parallel_full_file = (
         parallel_jobs > 1
-        and duration_hint_sec is not None
-        and duration_hint_sec >= 60.0
-        and not window_list
+        and duration_sec >= 60.0
+        and len(windows) == 0
     )
+    parallel_in_span = (
+        parallel_jobs > 1
+        and duration_sec >= 60.0
+        and single_span is not None
+        and (single_span[1] - single_span[0]) >= 60.0
+    )
+    parallel_ok = parallel_full_file or parallel_in_span
 
     if not parallel_ok:
+        ss_in: float | None = None
+        t_out: float | None = None
+        time_off = 0.0
+        ratio_dur = duration_sec if duration_sec > 0 else None
+        if single_span is not None and (single_span[1] - single_span[0]) > 0.5:
+            w_lo, w_hi = single_span
+            ss_in = w_lo
+            t_out = w_hi - w_lo
+            time_off = w_lo
+            if ratio_dur is None or ratio_dur <= 0:
+                ratio_dur = t_out
+            else:
+                ratio_dur = t_out
         cmd = _ffmpeg_cmd(
             video_path,
             vf_filter,
             use_hwaccel=use_hwaccel,
+            ss_before_input=ss_in,
+            output_duration=t_out,
         )
         stderr = _run_blackdetect_stream(
             cmd,
             cancel,
             on_time_ratio,
-            duration_hint_sec,
+            ratio_dur,
         )
         black_events = _parse_blackdetect_stderr(stderr)
-        if window_list:
+        for e in black_events:
+            e["black_start"] = round(e["black_start"] + time_off, 4)
+        if len(windows) > 1:
             black_events = [
                 e
                 for e in black_events
-                if any(start <= e["black_start"] <= end for start, end in window_list)
+                if any(start <= e["black_start"] <= end for start, end in windows)
             ]
+        elif len(windows) == 1:
+            lo, hi = windows[0]
+            black_events = [e for e in black_events if lo <= e["black_start"] <= hi]
         return black_events
 
-    jobs = max(2, min(int(parallel_jobs), 16, max(2, int(duration_hint_sec / 30))))
+    scan_lo = 0.0
+    scan_span_len = duration_sec
+    if parallel_in_span and single_span is not None:
+        scan_lo, scan_hi = single_span
+        scan_span_len = max(0.5, scan_hi - scan_lo)
+
+    jobs = max(2, min(int(parallel_jobs), 16, max(2, int(scan_span_len / 30))))
     overlap = 4.0
-    spans = segment_scan_spans(duration_hint_sec, jobs, overlap)
+    spans = segment_scan_spans(scan_span_len, jobs, overlap)
     active: list[subprocess.Popen] = []
     lock = threading.Lock()
+    progress_slots = [0.0] * jobs
+    progress_lock = threading.Lock()
 
-    def run_segment(_idx: int, ss_start: float, seg_len: float) -> list[dict[str, float]]:
+    def make_local_cb(job_index: int):
+        def local_progress(local_r: float) -> None:
+            with progress_lock:
+                progress_slots[job_index] = min(1.0, max(0.0, local_r))
+
+        return local_progress
+
+    def run_segment(job_index: int, span_start: float, seg_len: float) -> list[dict[str, float]]:
         if cancel():
             raise BlackdetectCancelled()
+        abs_ss = scan_lo + span_start
         cmd = _ffmpeg_cmd(
             video_path,
             vf_filter,
             use_hwaccel=False,
-            ss_before_input=ss_start,
+            ss_before_input=abs_ss,
             output_duration=seg_len,
         )
 
         stderr = _run_blackdetect_stream(
             cmd,
             cancel,
-            on_time_ratio=None,
-            duration_for_ratio=None,
+            on_time_ratio=make_local_cb(job_index),
+            duration_for_ratio=seg_len,
             active_procs=active,
             procs_lock=lock,
         )
         events = _parse_blackdetect_stderr(stderr)
         for e in events:
-            e["black_start"] = round(e["black_start"] + ss_start, 4)
+            e["black_start"] = round(e["black_start"] + abs_ss, 4)
         return events
 
     all_events: list[dict[str, float]] = []
     if on_time_ratio:
-        on_time_ratio(0.08)
+        on_time_ratio(0.0)
 
     try:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             future_list = [
                 pool.submit(run_segment, i, spans[i][0], spans[i][1]) for i in range(jobs)
             ]
+            fut_to_idx = {fut: i for i, fut in enumerate(future_list)}
             pending = set(future_list)
-            done_n = 0
             while pending:
                 if cancel():
                     with lock:
@@ -358,14 +427,24 @@ def detect_black_frames(
                             if p.poll() is None:
                                 p.kill()
                     raise BlackdetectCancelled()
+                if on_time_ratio:
+                    with progress_lock:
+                        agg = sum(progress_slots) / jobs
+                    on_time_ratio(min(0.99, agg))
                 finished, pending = wait(
                     pending, timeout=0.25, return_when=FIRST_COMPLETED
                 )
                 for fut in finished:
+                    jidx = fut_to_idx[fut]
                     all_events.extend(fut.result())
-                    done_n += 1
+                    with progress_lock:
+                        progress_slots[jidx] = 1.0
                     if on_time_ratio:
-                        on_time_ratio(min(0.99, done_n / jobs))
+                        with progress_lock:
+                            agg = sum(progress_slots) / jobs
+                        on_time_ratio(min(0.99, agg))
+            if on_time_ratio:
+                on_time_ratio(1.0)
     except BlackdetectCancelled:
         with lock:
             for p in list(active):
@@ -374,6 +453,12 @@ def detect_black_frames(
         raise
 
     merged = _merge_overlapping_events(all_events, gap=0.25)
+    if windows:
+        merged = [
+            e
+            for e in merged
+            if any(start <= e["black_start"] <= end for start, end in windows)
+        ]
     return merged
 
 

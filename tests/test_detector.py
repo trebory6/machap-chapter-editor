@@ -9,6 +9,11 @@ def test_ffmpeg_status_time_seconds() -> None:
     assert ffmpeg_status_time_seconds("frame= 100 fps=25 q=-0.0 size= 0kB time=00:01:02.34") == (
         62.34
     )
+    assert ffmpeg_status_time_seconds("frame=1 fps=0 q=-0.0 size=0kB time= 00:01:02.34 bitrate=1kbit/s") == (
+        62.34
+    )
+    assert ffmpeg_status_time_seconds("out_time_us=62340000") == 62.34
+    assert ffmpeg_status_time_seconds("out_time_ms=62340") == 62.34
     assert ffmpeg_status_time_seconds("no time here") is None
 
 

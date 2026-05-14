@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 from typing import Any
+
+
+class RemuxError(Exception):
+    """FFmpeg remux with embedded ffmetadata failed."""
+
+    def __init__(self, message: str, *, stderr: str = "") -> None:
+        super().__init__(message)
+        self.stderr = stderr
 
 
 def normalize_export_format(value: str | None) -> str:
@@ -135,3 +145,107 @@ def get_media_duration_seconds(path: str) -> float | None:
         return float(result.stdout.strip())
     except ValueError:
         return None
+
+
+def build_remux_with_metadata_command(
+    source_path: str,
+    metadata_path: str,
+    output_path: str,
+) -> list[str]:
+    """FFmpeg argv to mux ``source_path`` with chapters from an ffmetadata file."""
+    lp = source_path.lower()
+    if lp.endswith((".avi", ".wmv")):
+        video_bitrate, audio_bitrate = get_bitrates(source_path)
+        return [
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-i",
+            metadata_path,
+            "-map_metadata",
+            "1",
+            "-c:v",
+            "libx264",
+            "-b:v",
+            str(video_bitrate),
+            "-c:a",
+            "aac",
+            "-b:a",
+            str(audio_bitrate),
+            output_path,
+        ]
+    if lp.endswith((".mp4", ".mkv")):
+        return [
+            "ffmpeg",
+            "-y",
+            "-i",
+            source_path,
+            "-i",
+            metadata_path,
+            "-map_metadata",
+            "1",
+            "-c",
+            "copy",
+            output_path,
+        ]
+    return [
+        "ffmpeg",
+        "-y",
+        "-i",
+        source_path,
+        "-i",
+        metadata_path,
+        "-map_metadata",
+        "1",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "22",
+        "-preset",
+        "medium",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        output_path,
+    ]
+
+
+def remux_from_ffmetadata_file(
+    source_path: str,
+    metadata_path: str,
+    output_path: str,
+) -> None:
+    """Run FFmpeg to write ``output_path`` with embedded chapters from ffmetadata."""
+    cmd = build_remux_with_metadata_command(source_path, metadata_path, output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RemuxError(
+            f"ffmpeg exited with code {result.returncode}",
+            stderr=(result.stderr or "")[-8000:],
+        )
+
+
+def remux_video_with_chapters(
+    source_path: str,
+    chapters: list[float],
+    output_path: str,
+) -> None:
+    """
+    Write a temporary ffmetadata chapter file and remux into ``output_path``.
+
+    ``output_path`` should end in ``.mp4`` or ``.mkv`` (or another FFmpeg-supported
+    extension). Cleans up the temp metadata file on success or failure.
+    """
+    duration_sec = get_media_duration_seconds(source_path)
+    fd, meta_path = tempfile.mkstemp(suffix="_chapters_ffmeta.txt", text=True)
+    os.close(fd)
+    try:
+        write_ffmpeg_chapter_file(chapters, meta_path, duration_sec=duration_sec)
+        remux_from_ffmetadata_file(source_path, meta_path, output_path)
+    finally:
+        try:
+            os.unlink(meta_path)
+        except OSError:
+            pass

@@ -1,5 +1,4 @@
 import os
-import subprocess
 from typing import Any
 
 from PySide6.QtCore import QElapsedTimer, Qt
@@ -20,13 +19,15 @@ from PySide6.QtWidgets import (
 
 from blackdetect_worker import BatchBlackdetectWorker, format_eta
 from export_utils import (
-    get_bitrates,
     get_media_duration_seconds,
     normalize_export_format,
+    RemuxError,
+    remux_from_ffmetadata_file,
     write_ffmpeg_chapter_file,
     write_mkvmerge_simple_chapters,
 )
 from scan_settings import ScanSettingsDialog
+from time_windows import DEFAULT_SCAN_WINDOW_LIST_TEXT
 
 
 class QueueManager(QMainWindow):
@@ -36,11 +37,11 @@ class QueueManager(QMainWindow):
             "min_black_seconds": 0.4,
             "ratio_black_pixels": 0.98,
             "black_pixel_threshold": 0.08,
-            "window_list": "",
+            "window_list": DEFAULT_SCAN_WINDOW_LIST_TEXT,
             "export_format": "mp4",
             "max_analysis_width": 854,
             "use_hwaccel": False,
-            "parallel_scan_jobs": 1,
+            "parallel_scan_jobs": 4,
         }
         self.setWindowTitle("MaChap File Queue")
         self.resize(600, 500)
@@ -184,7 +185,7 @@ class QueueManager(QMainWindow):
         dialog = ScanSettingsDialog(self, self.scan_settings)
         dialog.settingsApplied.connect(self.update_scan_settings)
         if dialog.exec():
-            self.scan_settings = dialog.get_settings()
+            self.update_scan_settings(dialog.get_settings())
 
     def update_scan_settings(self, new_settings: dict[str, Any]) -> None:
         self.scan_settings = new_settings
@@ -261,67 +262,9 @@ class QueueManager(QMainWindow):
         ext = ".mp4" if fmt == "mp4" else ".mkv"
         output_file = f"{output_basename}{ext}"
 
-        if path.lower().endswith((".avi", ".wmv")):
-            video_bitrate, audio_bitrate = get_bitrates(path)
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                path,
-                "-i",
-                metadata_file,
-                "-map_metadata",
-                "1",
-                "-c:v",
-                "libx264",
-                "-b:v",
-                str(video_bitrate),
-                "-c:a",
-                "aac",
-                "-b:a",
-                str(audio_bitrate),
-                output_file,
-            ]
-        elif path.lower().endswith((".mp4", ".mkv")):
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                path,
-                "-i",
-                metadata_file,
-                "-map_metadata",
-                "1",
-                "-c",
-                "copy",
-                output_file,
-            ]
-        else:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                path,
-                "-i",
-                metadata_file,
-                "-map_metadata",
-                "1",
-                "-c:v",
-                "libx264",
-                "-crf",
-                "22",
-                "-preset",
-                "medium",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
-                output_file,
-            ]
-
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
+            remux_from_ffmetadata_file(path, metadata_file, output_file)
+        except RemuxError as e:
             QMessageBox.critical(
                 self,
                 "FFmpeg failed",
