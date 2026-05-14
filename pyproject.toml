@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "blackdetect_worker",
+    "detector",
+    "export_utils",
+    "gui",
+    "main",
+    "queue_manager",
+    "scan_settings",
+    "timeline",
+    "time_windows",
+]
+
+[project]
+name = "machap-chapter-editor"
+version = "0.1.0"
+description = "Desktop chapter editor for black-frame detection (FFmpeg) — ErsatzTV-friendly"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,6 +1,7 @@
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QColor, QPen
-from PySide6.QtCore import Qt, Signal
+
 
 class ChapterTimeline(QWidget):
     seekRequested = Signal(float)
@@ -27,8 +28,6 @@ class ChapterTimeline(QWidget):
         painter = QPainter(self)
         width = self.width()
         height = self.height()
-
-        print(f"[DEBUG] Timeline width: {width}px, duration: {self.video_duration}s")
 
         painter.fillRect(event.rect(), QColor(40, 0, 0))  # Dark red background
 

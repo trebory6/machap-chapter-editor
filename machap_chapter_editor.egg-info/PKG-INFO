@@ -1,3 +1,14 @@
+Metadata-Version: 2.4
+Name: machap-chapter-editor
+Version: 0.1.0
+Summary: Desktop chapter editor for black-frame detection (FFmpeg) — ErsatzTV-friendly
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6<7,>=6.6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+
 # MaChap Chapter Editor
 
 MaChap is a simple desktop video chapter editor designed to detect and manage chapters based on black frames, using FFmpeg as the underlying engine.
@@ -48,9 +59,6 @@ This is a learning project, and I'm still figuring things out as I go. The code 
 - **Black Pixel Ratio**: How much of the frame must be dark to count as a black frame.
 - **Black Pixel Threshold**: How dark a pixel has to be to qualify as “black.”
 - **Scan Time Windows**: Comma-separated ranges, each `HH:MM:SS-HH:MM:SS` (24-hour clock, integer components), e.g. `00:02:00-00:03:00, 00:08:30-00:10:00`.
-- **Max scan width (px)**: Downscale each frame before `blackdetect` (default **854**). This mainly lowers **filter** cost; **decoding** the file at full resolution is often the slow part, so changing this alone may not move ETA much.
-- **Prefer hardware decoding**: Adds FFmpeg `-hwaccel auto` (default **off**). On some Windows setups it can stall or hang; if the scan progress bar never moves, leave this off. Parallel scans always use software decode even when this is on.
-- **Parallel scan jobs**: How many FFmpeg processes run on different **time slices** of the file (default **1**). Raise this on a fast machine for throughput; set **1** for a single sequential pass (most accurate, no fast-seek edge effects). Parallel mode is **disabled** when **Scan time windows** are set. Fast input seek can shift chapter times by roughly a GOP near slice edges; overlap merging reduces duplicates.
 - **Export format**: **MP4** or **MKV** selects the queue remux container when FFmpeg copies or re-encodes streams; **FFmpeg ffmetadata** or **mkvmerge simple** writes only a chapter sidecar `.txt` file.
 
 ---

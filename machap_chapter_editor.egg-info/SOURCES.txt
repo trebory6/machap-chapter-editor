@@ -1,0 +1,17 @@
+README.md
+detector.py
+export_utils.py
+gui.py
+main.py
+pyproject.toml
+queue_manager.py
+scan_settings.py
+time_windows.py
+timeline.py
+machap_chapter_editor.egg-info/PKG-INFO
+machap_chapter_editor.egg-info/SOURCES.txt
+machap_chapter_editor.egg-info/dependency_links.txt
+machap_chapter_editor.egg-info/requires.txt
+machap_chapter_editor.egg-info/top_level.txt
+tests/test_export_utils.py
+tests/test_time_windows.py
